@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: plants_db
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: always
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: always
+
+  mlflow:
+    image: python:3.10
+    container_name: mlflow
+    working_dir: /mlflow
+    command: >
+      bash -c "
+        pip install mlflow boto3 pymysql &&
+        mlflow server
+          --backend-store-uri mysql+pymysql://root:root@mysql:3306/mlflow
+          --default-artifact-root s3://mlflow/
+          --host 0.0.0.0
+          --port 5000
+      "
+    ports:
+      - "5000:5000"
+    environment:
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      - mysql
+      - minio
+    restart: always
+
+  airflow:
+    image: apache/airflow:2.7.3
+    container_name: airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__SQL_ALCHEMY_CONN: mysql+mysqldb://root:root@mysql:3306/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__RBAC: "true"
+      AIRFLOW__API__AUTH_BACKEND: "airflow.api.auth.backend.basic_auth"
+      _PIP_ADDITIONAL_REQUIREMENTS: "mlflow boto3 pymysql minio"
+    ports:
+      - "8080:8080"
+    command: bash -c "airflow db init && airflow users create -u admin -p admin -r Admin -e admin@example.com -f Admin -l User && airflow webserver & airflow scheduler"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+    depends_on:
+      - mysql
+      - mlflow
+      - minio
+    restart: always
+
+volumes:
+  mysql_data:
+  minio_data:
