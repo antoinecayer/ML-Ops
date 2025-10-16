@@ -1,7 +1,4 @@
 services:
-  # =====================================
-  #  MYSQL DATABASE
-  # =====================================
   mysql:
     image: mysql:8.0
     container_name: mysql
@@ -15,14 +12,12 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     restart: always
-    healthcheck: # Ajout du Healthcheck pour Wait-for-it
+    healthcheck: 
       test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost"]
       timeout: 20s
       retries: 10
+      start_period: 10s
 
-  # =====================================
-  #  MINIO (local S3)
-  # =====================================
   minio:
     image: minio/minio
     container_name: minio
@@ -31,20 +26,15 @@ services:
       MINIO_ROOT_PASSWORD: password
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # API S3
-      - "9001:9001"   # Web UI
+      - "9000:9000"
+      - "9001:9001"
     volumes:
       - minio_data:/data
     restart: always
 
-  # =====================================
-  #  MLflow tracking (Image officielle)
-  # =====================================
   mlflow:
-    # Utilisation de l'image officielle MLflow
     image: ghcr.io/mlflow/mlflow:latest 
     container_name: mlflow
-    # Commande simplifiée pour utiliser les dépendances Python natives
     command: >
       mlflow server
         --backend-store-uri mysql+pymysql://root:root@mysql:3306/plants_db
@@ -54,51 +44,36 @@ services:
     ports:
       - "5000:5000"
     environment:
-      # L'endpoint S3 est le service MinIO sur le port 9000 du réseau Docker
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: admin
       AWS_SECRET_ACCESS_KEY: password
-    # Attend que mysql et minio soient démarrés
     depends_on:
-      - mysql
-      - minio
+      mysql:
+        condition: service_started
+      minio:
+        condition: service_started
     restart: always
 
-  # =====================================
-  #  Service d'attente (Wait-for-it)
-  # =====================================
-  wait:
-    image: waisbrot/wait-for-it
-    container_name: wait-for-db
-    # Attends que MySQL soit prêt sur le port 3306
-    command: ["mysql:3306", "--", "echo", "MySQL is ready"]
-    depends_on:
-      - mysql
-    
-  # =====================================
-  #  AIRFLOW
-  # =====================================
   airflow:
-    image: apache/airflow:2.7.3
+    build: . 
     container_name: airflow
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      # Utilisation du même utilisateur/mot de passe que MySQL
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: mysql+mysqldb://root:root@mysql:3306/plants_db
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__RBAC: "true"
       AIRFLOW__API__AUTH_BACKEND: "airflow.api.auth.backend.basic_auth"
-      # Ajout des dépendances Python pour se connecter à MySQL et MinIO
-      _PIP_ADDITIONAL_REQUIREMENTS: "mlflow boto3 pymysql minio"
     ports:
       - "8080:8080"
     command: bash -c "airflow db init && airflow users create -u admin -p admin -r Admin -e admin@example.com -f Admin -l User && airflow webserver & airflow scheduler"
     volumes:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
-    # Airflow ne démarre qu'après le service 'wait'
     depends_on:
-      - wait
+      mysql:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
     restart: always
 
 volumes:
